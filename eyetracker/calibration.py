@@ -46,6 +46,7 @@ PHASE_SETTLE = "settle"
 PHASE_CAPTURE = "capture"
 
 _MIN_FITTED_POINTS = 5  # quadratic fit has 6 unknowns per axis; ridge keeps fewer points from blowing up, but this floor avoids fitting pure noise
+_OUTLIER_RESIDUAL_FACTOR = 3.0  # a point whose fit error exceeds this * median is dropped and the fit redone
 
 
 def _design_row(nx: float, ny: float) -> list[float]:
@@ -149,35 +150,59 @@ class GazeCalibrator:
             self._phase_start = self._clock()
             self._capture_samples = []
 
-    def _fit(self) -> None:
-        if len(self._fitted_raw) < _MIN_FITTED_POINTS:
-            return  # too few usable fixations (e.g. face kept dropping out); stay uncalibrated
-        design = np.array([_design_row(nx, ny) for nx, ny in self._fitted_raw])
-        target = np.array(self._fitted_targets, dtype=float)
-
-        # Ridge regression (ATA + lambda*I) instead of plain least squares:
-        # a handful of noisy calibration samples feeding a 6-parameter
-        # quadratic fit can otherwise swing wildly at the screen edges. The
-        # regularization trades a small amount of bias for a lot less
-        # variance, which is the right trade for ~9 noisy data points.
+    def _solve_ridge(self, raw: np.ndarray, target: np.ndarray) -> np.ndarray | None:
+        """Ridge regression (ATA + lambda*I) instead of plain least squares:
+        a handful of noisy calibration samples feeding a 6-parameter quadratic
+        fit can otherwise swing wildly at the screen edges. Regularization
+        trades a little bias for a lot less variance — the right trade for a
+        dozen-ish noisy fixations."""
+        design = np.array([_design_row(nx, ny) for nx, ny in raw])
         gram = design.T @ design + self.ridge_lambda * np.eye(design.shape[1])
         rhs = design.T @ target
         try:
             transform = np.linalg.solve(gram, rhs)
         except np.linalg.LinAlgError:
+            return None
+        return transform if np.all(np.isfinite(transform)) else None
+
+    def _fit(self) -> None:
+        if len(self._fitted_raw) < _MIN_FITTED_POINTS:
+            return  # too few usable fixations (e.g. face kept dropping out); stay uncalibrated
+        raw = np.array(self._fitted_raw, dtype=float)
+        target = np.array(self._fitted_targets, dtype=float)
+
+        transform = self._solve_ridge(raw, target)
+        if transform is None:
             return
-        if np.all(np.isfinite(transform)):
-            self._transform = transform
+
+        # Outlier rejection: if one calibration point is a clear outlier (the
+        # user blinked, glanced away, or lost tracking right at that dot), its
+        # large residual drags the whole fit. Drop the single worst point when
+        # its error is a big multiple of the typical error, then refit — as
+        # long as enough points remain to keep the quadratic well-determined.
+        if len(raw) > _MIN_FITTED_POINTS:
+            pred = np.array([_design_row(nx, ny) for nx, ny in raw]) @ transform
+            residuals = np.linalg.norm(pred - target, axis=1)
+            median_res = float(np.median(residuals))
+            worst = int(np.argmax(residuals))
+            if median_res > 0 and residuals[worst] > _OUTLIER_RESIDUAL_FACTOR * median_res:
+                keep = np.arange(len(raw)) != worst
+                refit = self._solve_ridge(raw[keep], target[keep])
+                if refit is not None:
+                    transform = refit
+
+        self._transform = transform
 
     def map(self, raw_offset: tuple[float, float] | None) -> tuple[float, float] | None:
         """Project a raw eye offset to normalized (0-1) screen coordinates."""
         if raw_offset is None or not all(np.isfinite(raw_offset)):
             return None
         if self._transform is None:
-            # Uncalibrated fallback: center-biased passthrough so the cursor
-            # still moves sensibly before the user calibrates.
+            # Uncalibrated fallback: the feature is centered near 0, so scale
+            # it out to a rough screen guess. Only used until the user presses
+            # C — it just keeps the cursor moving in the right direction.
             nx, ny = raw_offset
-            return float(np.clip(nx, 0.0, 1.0)), float(np.clip(ny, 0.0, 1.0))
+            return float(np.clip(0.5 + nx * 3.0, 0.0, 1.0)), float(np.clip(0.5 + ny * 3.0, 0.0, 1.0))
         row = np.array(_design_row(*raw_offset))
         sx, sy = row @ self._transform
         if not (np.isfinite(sx) and np.isfinite(sy)):

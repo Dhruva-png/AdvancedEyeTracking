@@ -19,9 +19,10 @@ iris landmarks instead of classic Haar-cascade eye detection.
 ```
 eyetracker/
   config.py          tunable parameters (dataclass)
-  landmarks.py        MediaPipe landmark index groups
-  metrics.py           pure functions: EAR, smoothing, gaze offset/classification
-  calibration.py       9-point calibration -> ridge-regularized quadratic raw-gaze-to-screen mapping
+  landmarks.py        MediaPipe landmark index groups (contour, iris, corners, lids)
+  metrics.py           pure functions: EAR, head-invariant gaze feature, classification
+  filters.py           One-Euro adaptive filter for the gaze cursor
+  calibration.py       9-point calibration -> ridge quadratic map + outlier rejection
   heatmap.py           gaze accumulation + gaussian-smoothed rendering
   tracker.py           per-frame MediaPipe processing -> FrameResult (no drawing)
   theme.py             shared color palette (BGR for cv2, hex for matplotlib)
@@ -35,10 +36,43 @@ eyetracker/
 main.py                 CLI entry point
 ```
 
-Logic is split from presentation: `metrics.py`, `heatmap.py`, and
-`calibration.py` are pure/deterministic and covered by unit tests in
+Logic is split from presentation: `metrics.py`, `filters.py`, `heatmap.py`,
+and `calibration.py` are pure/deterministic and covered by unit tests in
 `tests/`, independent of any camera or display hardware. `tracker.py`
 extracts signals only — all drawing lives in `hud.py`/`gaze_view.py`.
+
+## How accurate is it, really?
+
+Honest answer: **a single webcam cannot do pixel-perfect gaze.** Commercial
+eye trackers (Tobii, EyeLink) use infrared illumination and dedicated
+sensors to reach ~0.5° of visual angle, which is still ~15–30 px at a normal
+desk viewing distance. A standard RGB webcam has no depth or IR signal and is
+noisier, so anyone claiming pixel-perfect gaze from a laptop camera is
+mistaken. This project uses every technique that meaningfully closes the gap:
+
+- **Head-invariant gaze feature.** Gaze is measured as the iris offset from
+  the eye *corners*, in an eye-aligned frame, normalized by the corner-to-
+  corner distance. That makes it invariant to camera distance (lean in/out)
+  and head roll (tilt), and the corners are far steadier landmarks than a box
+  fit to jittery contour points.
+- **Quadratic calibration with ridge regularization + outlier rejection.**
+  The eye-to-screen mapping isn't linear, so a 9-point grid fits a quadratic
+  (6 coefficients/axis); ridge keeps a noisy fit from blowing up at the
+  edges, and one clearly-bad calibration point (a blink or glance-away) is
+  detected by its residual, dropped, and the fit redone.
+- **Blink/squint gating.** A half-closed eye yields a geometrically
+  meaningless iris position, so the signal freezes at the last good reading
+  instead of lurching.
+- **One-Euro adaptive cursor filter** (Casiez et al.) — rock-steady during a
+  fixation, low-lag during a saccade, with no fixed-alpha compromise.
+
+In a simulated session with a nonlinear eye model and realistic per-frame
+noise, this lands roughly **20–40 px mean error** across the screen after
+calibration. On real hardware, expect that ballpark **if your head stays
+where it was when you calibrated** — the biggest remaining error source is
+head movement (position/distance), so recalibrate (`c`) if you shift in your
+seat. Filter feel (`gaze_cursor_min_cutoff`, `gaze_cursor_beta`) and all
+thresholds live in `config.py` if you want to trade steadiness vs. lag.
 
 **Design note on the gaze cursor:** rather than an OS-level always-on-top
 transparent overlay (fragile, platform-specific, and requires broader window-
@@ -84,35 +118,11 @@ changes a lot).
 (the ring is dim and steady) followed by a "hold still, capturing" window
 (the ring pulses) — only samples from the pulsing window count, and they're
 median-aggregated per point before fitting, so a stray blink or saccade
-during capture won't skew the result. It takes roughly 15-20 seconds; sit
+during capture won't skew the result. It takes roughly 15–20 seconds; sit
 still and keep your head in a natural, comfortable position throughout,
-since the fit is calibrated to that head position/distance from the
-camera specifically.
-
-**Why 9 points and not 5:** the iris's position within its eye socket
-doesn't move linearly with on-screen gaze position even for a still head,
-so a 5-point *linear* fit was measurably inaccurate away from the
-calibration points — it's exact at the 5 dots and increasingly wrong
-in between and past them, which reads as "jumpy and inaccurate" cursor
-behavior. The mapping is now a ridge-regularized *quadratic* fit
-(6 coefficients per axis instead of 3), and 9 well-spread points give it
-enough data to be well-conditioned across the whole screen instead of
-extrapolating from just the center and 4 corners.
-
-**Why the cursor doesn't jump as much anymore:** two upstream signal fixes,
-plus a cursor-side safety net:
-- The eye bounding box (used to compute where the iris sits *within* the
-  eye) is now smoothed frame-to-frame. Previously only the iris center was
-  smoothed while the box itself was recomputed raw every frame — since the
-  gaze ratio *divides by* the box's width/height, a small amount of raw
-  landmark jitter in the box was being amplified into a much larger jump
-  in the ratio.
-- Gaze estimation now freezes during a blink or squint (EAR below a
-  "still usable" threshold) instead of computing a position from a
-  half-closed eye, which is geometrically meaningless.
-- As a last line of defense, the Gaze View damps any single-frame jump
-  larger than a plausible saccade instead of snapping the cursor there —
-  legitimate fast eye movements still arrive, just over 2-3 frames.
+since the fit is tied to that head position/distance from the camera.
+(See *How accurate is it, really?* above for the techniques behind the
+mapping and cursor smoothing.)
 
 Optional flags:
 

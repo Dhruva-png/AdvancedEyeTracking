@@ -40,7 +40,8 @@ class Application:
         self.gaze_view = GazeView(
             get_screen_resolution(),
             trail_length=self.config.gaze_trail_length,
-            smoothing_alpha=self.config.gaze_cursor_smoothing_alpha,
+            min_cutoff=self.config.gaze_cursor_min_cutoff,
+            beta=self.config.gaze_cursor_beta,
         )
 
         self._show_dashboard = False

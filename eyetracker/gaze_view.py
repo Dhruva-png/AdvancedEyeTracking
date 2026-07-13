@@ -20,21 +20,31 @@ import numpy as np
 
 from . import render, theme
 from .calibration import PHASE_SETTLE, GazeCalibrator
+from .filters import OneEuroFilter2D
 
 WINDOW_NAME = "Gaze View"
 _MAX_CANVAS_WIDTH = 1280
-_MAX_PLAUSIBLE_JUMP = 0.25  # normalized screen-fraction distance; larger single-frame jumps are damped
 
 
 class GazeView:
-    def __init__(self, screen_resolution: tuple[int, int], trail_length: int = 24, smoothing_alpha: float = 0.35):
+    def __init__(
+        self,
+        screen_resolution: tuple[int, int],
+        trail_length: int = 24,
+        min_cutoff: float = 1.2,
+        beta: float = 0.5,
+    ):
         w, h = screen_resolution
         if w > _MAX_CANVAS_WIDTH:
             scale = _MAX_CANVAS_WIDTH / w
             w, h = int(w * scale), int(h * scale)
         self.canvas_size = (w, h)
-        self.smoothing_alpha = smoothing_alpha
         self._trail: deque[tuple[int, int]] = deque(maxlen=trail_length)
+        # One-Euro filter on the on-screen point: adapts smoothing to gaze
+        # speed, so the cursor is rock-steady during a fixation yet keeps up
+        # with a saccade — no fixed-alpha lag/jitter tradeoff, and no need for
+        # the old manual jump-damping hack.
+        self._filter = OneEuroFilter2D(min_cutoff=min_cutoff, beta=beta)
         self._smoothed: tuple[float, float] | None = None
         self._window_created = False
         # The grid/bezel never changes, so it's built once and copied each
@@ -84,23 +94,7 @@ class GazeView:
 
     def _draw_gaze_cursor(self, canvas: np.ndarray, gaze_point_norm, is_calibrated: bool) -> None:
         if gaze_point_norm is not None:
-            if self._smoothed is None:
-                self._smoothed = gaze_point_norm
-            else:
-                dx = gaze_point_norm[0] - self._smoothed[0]
-                dy = gaze_point_norm[1] - self._smoothed[1]
-                jump = (dx * dx + dy * dy) ** 0.5
-                # A jump bigger than a saccade should plausibly cover in one
-                # frame is more likely a momentary tracking hiccup than a
-                # real eye movement; blend it in gradually instead of
-                # snapping the cursor there, so one bad frame doesn't look
-                # like a teleport. Legitimate fast movements still arrive,
-                # just over 2-3 frames instead of one.
-                a = self.smoothing_alpha * 0.25 if jump > _MAX_PLAUSIBLE_JUMP else self.smoothing_alpha
-                self._smoothed = (
-                    a * gaze_point_norm[0] + (1 - a) * self._smoothed[0],
-                    a * gaze_point_norm[1] + (1 - a) * self._smoothed[1],
-                )
+            self._smoothed = self._filter(gaze_point_norm, time.time())
             self._trail.append(self._to_px(self._smoothed))
 
         # Dim, solid circles instead of a per-point alpha-blended copy of the

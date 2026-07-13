@@ -34,11 +34,15 @@ def _run_full_calibration(calibrator, clock, sample_for_target):
         calibrator.update(sample_for_target(target))
 
 
-def test_uncalibrated_map_passes_through_clipped():
+def test_uncalibrated_map_scales_centered_feature_to_screen():
+    # The raw feature is centered near 0; uncalibrated fallback maps 0 -> screen
+    # center and moves in the correct direction, clipped to [0, 1].
     calibrator, _ = _make_calibrator([(0.5, 0.5)])
     assert calibrator.is_calibrated is False
-    assert calibrator.map((0.5, 0.5)) == (0.5, 0.5)
-    assert calibrator.map((-1.0, 2.0)) == (0.0, 1.0)
+    assert calibrator.map((0.0, 0.0)) == (0.5, 0.5)
+    sx, sy = calibrator.map((0.1, -0.1))
+    assert sx > 0.5 and sy < 0.5
+    assert calibrator.map((5.0, -5.0)) == (1.0, 0.0)  # clipped
 
 
 def test_map_of_none_is_none():
@@ -99,6 +103,27 @@ def test_outlier_sample_during_capture_is_rejected_by_median():
     sx, sy = calibrator.map((0.5, 0.5))
     assert abs(sx - 0.5) < 1e-6
     assert abs(sy - 0.5) < 1e-6
+
+
+def test_one_bad_calibration_point_is_dropped_and_refit():
+    # 8 points map identity; 1 point is entirely corrupt (user glanced away
+    # for that whole dot). Point-level outlier rejection should drop it and
+    # refit, recovering an accurate mapping the corrupt point would otherwise
+    # have skewed.
+    def sample_for_target(target):
+        if target == CALIBRATION_POINTS[4]:  # sabotage one specific dot
+            return (target[0] + 0.5, target[1] - 0.5)
+        return target
+
+    calibrator, clock = _make_calibrator(CALIBRATION_POINTS, settle_sec=0.5, capture_sec=1.0, ridge_lambda=0.0)
+    _run_full_calibration(calibrator, clock, sample_for_target=sample_for_target)
+
+    assert calibrator.is_calibrated is True
+    # Points other than the sabotaged one should map back near-exactly.
+    for tx, ty in [(0.5, 0.5), (0.08, 0.08), (0.92, 0.92)]:
+        sx, sy = calibrator.map((tx, ty))
+        assert abs(sx - tx) < 1e-3
+        assert abs(sy - ty) < 1e-3
 
 
 def test_stays_uncalibrated_if_face_missing_through_most_of_calibration():

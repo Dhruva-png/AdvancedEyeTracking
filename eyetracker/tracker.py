@@ -30,7 +30,7 @@ class FrameResult:
     left_eye_pts: np.ndarray | None = None
     right_eye_pts: np.ndarray | None = None
     gaze: str = "UNKNOWN"
-    raw_gaze_offset: tuple[float, float] | None = None
+    raw_gaze_offset: tuple[float, float] | None = None  # head-invariant, EMA-smoothed, blink-frozen
     blink: bool = False
     left_ear: float = 0.0
     right_ear: float = 0.0
@@ -56,8 +56,7 @@ class EyeTracker:
         )
         self._smooth_left: tuple[int, int] | None = None
         self._smooth_right: tuple[int, int] | None = None
-        self._smooth_left_box: tuple[float, float, float, float] | None = None
-        self._smooth_right_box: tuple[float, float, float, float] | None = None
+        self._smooth_gaze: tuple[float, float] | None = None
         self._last_valid_gaze_offset: tuple[float, float] | None = None
         self._last_blink_time: float = 0.0
         self.blink_count: int = 0
@@ -86,39 +85,39 @@ class EyeTracker:
         left_box = cv2.boundingRect(left_eye_pts)
         right_box = cv2.boundingRect(right_eye_pts)
 
-        left_center = metrics.iris_center(mesh, lm.LEFT_IRIS, w, h)
-        right_center = metrics.iris_center(mesh, lm.RIGHT_IRIS, w, h)
+        # Sub-pixel iris centers (float) drive the gaze feature; the int
+        # versions are only for drawing.
+        left_iris_f = metrics.iris_center_f(mesh, lm.LEFT_IRIS, w, h)
+        right_iris_f = metrics.iris_center_f(mesh, lm.RIGHT_IRIS, w, h)
 
         alpha = self.config.smoothing_alpha
-        self._smooth_left = metrics.smooth_point(left_center, self._smooth_left, alpha)
-        self._smooth_right = metrics.smooth_point(right_center, self._smooth_right, alpha)
+        self._smooth_left = metrics.smooth_point((int(left_iris_f[0]), int(left_iris_f[1])), self._smooth_left, alpha)
+        self._smooth_right = metrics.smooth_point((int(right_iris_f[0]), int(right_iris_f[1])), self._smooth_right, alpha)
 
         left_ear = metrics.eye_aspect_ratio(left_eye_pts)
         right_ear = metrics.eye_aspect_ratio(right_eye_pts)
         blink = self._detect_blink(left_ear, right_ear)
 
-        # eye_offset divides the iris position by the box's own width/height,
-        # so per-frame jitter in the box (a few noisy landmarks each frame)
-        # gets amplified into a much larger jump in the ratio than the same
-        # jitter would cause in a plain pixel coordinate. Smoothing the box
-        # itself (not just the iris center) removes most of that.
-        box_alpha = self.config.eye_box_smoothing_alpha
-        self._smooth_left_box = metrics.smooth_values(left_box, self._smooth_left_box, box_alpha)
-        self._smooth_right_box = metrics.smooth_values(right_box, self._smooth_right_box, box_alpha)
-
-        left_offset = metrics.eye_offset(self._smooth_left, self._smooth_left_box)
-        right_offset = metrics.eye_offset(self._smooth_right, self._smooth_right_box)
-        candidate_offset = _average_offsets(left_offset, right_offset)
+        candidate_offset = self._compute_gaze_feature(mesh, left_iris_f, right_iris_f, w, h)
 
         # A half-closed eye (mid-blink, squinting) gives a geometrically
-        # meaningless iris-in-box ratio. Rather than feed that noise into the
-        # gaze signal, freeze it at the last trustworthy reading.
-        eyes_open_enough = left_ear >= self.config.gaze_valid_ear_threshold and right_ear >= self.config.gaze_valid_ear_threshold
+        # meaningless iris position. Rather than feed that noise into the gaze
+        # signal, freeze it at the last trustworthy reading.
+        eyes_open_enough = (
+            left_ear >= self.config.gaze_valid_ear_threshold and right_ear >= self.config.gaze_valid_ear_threshold
+        )
         if candidate_offset is not None and eyes_open_enough:
-            self._last_valid_gaze_offset = candidate_offset
+            # Light EMA on the (already-quiet) feature: kills residual jitter
+            # before it reaches calibration/mapping. The heavy, adaptive
+            # smoothing for the visible cursor is the One-Euro filter in
+            # gaze_view; this stays light to avoid stacking lag.
+            self._smooth_gaze = metrics.smooth_values(
+                candidate_offset, self._smooth_gaze, self.config.gaze_feature_smoothing_alpha
+            )
+            self._last_valid_gaze_offset = self._smooth_gaze
         raw_gaze_offset = self._last_valid_gaze_offset
 
-        gaze = metrics.classify_gaze_direction(raw_gaze_offset)
+        gaze = metrics.classify_centered_gaze(raw_gaze_offset, self.config.gaze_center_dead_zone)
 
         avg_x = (self._smooth_left[0] + self._smooth_right[0]) / 2.0
         avg_y = (self._smooth_left[1] + self._smooth_right[1]) / 2.0
@@ -143,6 +142,26 @@ class EyeTracker:
             y_norm=y_norm,
         )
 
+    def _compute_gaze_feature(self, mesh, left_iris_f, right_iris_f, w, h) -> tuple[float, float] | None:
+        def pt(idx: int) -> np.ndarray:
+            return np.array([mesh[idx].x * w, mesh[idx].y * h])
+
+        left = metrics.normalized_eye_gaze(
+            left_iris_f,
+            pt(lm.LEFT_EYE_LEFT_CORNER),
+            pt(lm.LEFT_EYE_RIGHT_CORNER),
+            pt(lm.LEFT_EYE_TOP_LID),
+            pt(lm.LEFT_EYE_BOTTOM_LID),
+        )
+        right = metrics.normalized_eye_gaze(
+            right_iris_f,
+            pt(lm.RIGHT_EYE_LEFT_CORNER),
+            pt(lm.RIGHT_EYE_RIGHT_CORNER),
+            pt(lm.RIGHT_EYE_TOP_LID),
+            pt(lm.RIGHT_EYE_BOTTOM_LID),
+        )
+        return metrics.fuse_eye_gaze(left, right)
+
     def _detect_blink(self, left_ear: float, right_ear: float) -> bool:
         threshold = self.config.blink_ear_threshold
         below_threshold = left_ear < threshold and right_ear < threshold
@@ -152,15 +171,3 @@ class EyeTracker:
             self.blink_count += 1
             return True
         return False
-
-
-def _average_offsets(
-    left: tuple[float, float] | None, right: tuple[float, float] | None
-) -> tuple[float, float] | None:
-    if left is None and right is None:
-        return None
-    if left is None:
-        return right
-    if right is None:
-        return left
-    return (left[0] + right[0]) / 2.0, (left[1] + right[1]) / 2.0
