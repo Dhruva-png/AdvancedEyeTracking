@@ -32,7 +32,15 @@ and covered by unit tests in `tests/`, independent of any camera hardware.
 
 ## Install
 
+Use a dedicated virtual environment — this project pins exact versions of
+`mediapipe`/`protobuf` that can conflict with other projects sharing your
+global Python install.
+
 ```bash
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS/Linux
+
 pip install -r requirements.txt
 ```
 
@@ -66,10 +74,15 @@ pytest
 ## Troubleshooting
 
 **`Failed to parse: node { ... }` when MediaPipe's `FaceMesh` is constructed** —
-this is a known incompatibility between `mediapipe` and `protobuf>=5`. Make
-sure you installed from `requirements.txt` (which pins `protobuf<4.25`) inside
-a fresh virtual environment, rather than reusing one with a newer protobuf
-already installed.
+incompatibility between `mediapipe` and `protobuf>=5`. Install from
+`requirements.txt` (which pins `protobuf<5`) inside a fresh virtual
+environment rather than reusing one with a newer protobuf already installed.
+
+**`AttributeError: module 'mediapipe' has no attribute 'solutions'`** — recent
+`mediapipe` releases (0.10.15+) removed the legacy `mp.solutions.*` API this
+project uses in favor of the newer Tasks API. Install the exact pinned
+version from `requirements.txt` (`mediapipe==0.10.14`) rather than
+`pip install mediapipe`, which grabs the latest release.
 
 ## License
 

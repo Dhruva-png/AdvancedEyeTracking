@@ -42,16 +42,26 @@ class Application:
         logger.info("Camera opened. Controls: [h] dashboard  [e] export now  [q] quit")
 
         try:
-            with EyeTracker(self.config) as tracker:
+            tracker = EyeTracker(self.config)
+        except Exception:
+            cam.release()
+            raise
+
+        try:
+            try:
                 self._loop(cam, tracker)
-        except KeyboardInterrupt:
-            logger.info("Interrupted by user.")
+            except KeyboardInterrupt:
+                logger.info("Interrupted by user.")
         finally:
+            tracker.close()
             cam.release()
             cv2.destroyAllWindows()
             self.dashboard.close()
-            paths = self.session_logger.export(self.heatmap)
-            logger.info("Session saved: %s", paths)
+            if self.session_logger.samples:
+                paths = self.session_logger.export(self.heatmap)
+                logger.info("Session saved: %s", paths)
+            else:
+                logger.info("No samples recorded; nothing to export.")
 
     def _loop(self, cam: cv2.VideoCapture, tracker: EyeTracker) -> None:
         while True:

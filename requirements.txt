@@ -1,6 +1,6 @@
 opencv-python>=4.9
-mediapipe>=0.10
-protobuf<4.25,>=3.20    # mediapipe's compiled graph configs don't parse under newer protobuf 5.x
+mediapipe==0.10.14      # newer releases dropped the legacy mp.solutions.face_mesh API this project uses
+protobuf<5,>=3.20       # mediapipe's compiled graph configs don't parse under protobuf 5.x
 numpy>=1.26
 pandas>=2.2
 scipy>=1.12
