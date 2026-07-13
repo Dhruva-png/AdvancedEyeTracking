@@ -22,7 +22,7 @@ eyetracker/
   landmarks.py        MediaPipe landmark index groups (contour, iris, corners, lids)
   metrics.py           pure functions: EAR, head-invariant gaze feature, classification
   filters.py           One-Euro adaptive filter for the gaze cursor
-  calibration.py       9-point calibration -> ridge quadratic map + outlier rejection
+  calibration.py       9-pt + head-sweep calibration -> ridge quadratic map w/ head-pose compensation
   heatmap.py           gaze accumulation + gaussian-smoothed rendering
   tracker.py           per-frame MediaPipe processing -> FrameResult (no drawing)
   theme.py             shared color palette (BGR for cv2, hex for matplotlib)
@@ -60,6 +60,18 @@ mistaken. This project uses every technique that meaningfully closes the gap:
   (6 coefficients/axis); ridge keeps a noisy fit from blowing up at the
   edges, and one clearly-bad calibration point (a blink or glance-away) is
   detected by its residual, dropped, and the fit redone.
+- **Head-pose (yaw/pitch) compensation.** The corner-normalized feature
+  cancels head *translation, depth, and roll* but not *yaw/pitch* — turn or
+  nod your head and "eyes centered in their sockets" lands somewhere else on
+  screen. Calibration adds a short head-sweep phase (fixate the center dot,
+  move your head around): because your eyes counter-rotate to hold the target
+  (the vestibulo-ocular reflex), the eye feature and head pose co-vary while
+  the true target stays fixed — which is exactly the data needed to separate
+  "eye moved" from "head moved." The runtime model then corrects for head
+  pose relative to the calibration pose. Head pose comes from a cheap,
+  intrinsics-free proxy (nose position relative to the eye corners in the
+  eye-aligned frame). If you skip or barely move during the sweep, it detects
+  the missing signal and cleanly falls back to the eye-only map.
 - **Blink/squint gating.** A half-closed eye yields a geometrically
   meaningless iris position, so the signal freezes at the last good reading
   instead of lurching.
@@ -67,12 +79,14 @@ mistaken. This project uses every technique that meaningfully closes the gap:
   fixation, low-lag during a saccade, with no fixed-alpha compromise.
 
 In a simulated session with a nonlinear eye model and realistic per-frame
-noise, this lands roughly **20–40 px mean error** across the screen after
-calibration. On real hardware, expect that ballpark **if your head stays
-where it was when you calibrated** — the biggest remaining error source is
-head movement (position/distance), so recalibrate (`c`) if you shift in your
-seat. Filter feel (`gaze_cursor_min_cutoff`, `gaze_cursor_beta`) and all
-thresholds live in `config.py` if you want to trade steadiness vs. lag.
+noise, this lands roughly **10–40 px mean error** across the screen after
+calibration. The head-pose compensation is the difference between error that
+*stays* around ~11 px as you turn your head and error that climbs past
+**250 px** at a 0.15 yaw offset without it (measured in the test simulation).
+It is not magic — hold your head roughly within the range you swept during
+calibration, and recalibrate (`c`) if you move to a very different position.
+Filter feel (`gaze_cursor_min_cutoff`, `gaze_cursor_beta`), head compensation
+(`head_pose_compensation`), and all thresholds live in `config.py`.
 
 **Design note on the gaze cursor:** rather than an OS-level always-on-top
 transparent overlay (fragile, platform-specific, and requires broader window-
@@ -114,15 +128,16 @@ mode, but accuracy improves substantially after calibrating (`c`) for your
 current seating position — recalibrate whenever you move (or if lighting
 changes a lot).
 
-**Calibrating:** for each of the 9 dots, there's a brief "get ready" pause
-(the ring is dim and steady) followed by a "hold still, capturing" window
-(the ring pulses) — only samples from the pulsing window count, and they're
-median-aggregated per point before fitting, so a stray blink or saccade
-during capture won't skew the result. It takes roughly 15–20 seconds; sit
-still and keep your head in a natural, comfortable position throughout,
-since the fit is tied to that head position/distance from the camera.
-(See *How accurate is it, really?* above for the techniques behind the
-mapping and cursor smoothing.)
+**Calibrating** (about 20–25 seconds, two stages):
+1. **9 gaze dots** — for each, a brief "get ready" pause (dim steady ring)
+   then a "hold still, capturing" window (pulsing ring). Only the pulsing
+   window counts, and samples are median-aggregated per point, so a stray
+   blink or saccade won't skew a dot. Keep your head still for this stage.
+2. **Head sweep** — a magenta center dot appears: keep looking at it while
+   slowly moving your head left, right, up, and down. This is what teaches
+   the system to compensate for head movement (see *How accurate is it,
+   really?* above). Move smoothly through a comfortable range — that range
+   is where tracking will stay accurate afterward.
 
 Optional flags:
 

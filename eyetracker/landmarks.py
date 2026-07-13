@@ -30,3 +30,13 @@ RIGHT_EYE_LEFT_CORNER = 362
 RIGHT_EYE_RIGHT_CORNER = 263
 RIGHT_EYE_TOP_LID = 386
 RIGHT_EYE_BOTTOM_LID = 374
+
+# Nose tip — drives the head-pose (yaw/pitch) proxy used for head-movement
+# compensation. Its position relative to the outer eye corners shifts as the
+# head turns/nods.
+NOSE_TIP = 1
+
+# Outer eye corners span the face at eye level; used as the stable reference
+# frame for the head-pose proxy (image-left and image-right).
+FACE_LEFT_REF = LEFT_EYE_LEFT_CORNER      # 33
+FACE_RIGHT_REF = RIGHT_EYE_RIGHT_CORNER   # 263

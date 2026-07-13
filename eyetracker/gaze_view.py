@@ -122,6 +122,24 @@ class GazeView:
         w, h = self.canvas_size
         px = self._to_px(calibrator.current_target)
         pulse = 0.5 + 0.5 * np.sin(time.time() * 6.0)
+
+        if calibrator.is_sweeping:
+            # Head-sweep phase: keep eyes on the (pulsing) center dot while
+            # moving the head. The instruction is the important thing here.
+            radius = int(14 + 8 * pulse)
+            render.draw_glow_circle(canvas, px, radius=radius, color=theme.MAGENTA, layers=5)
+            cv2.circle(canvas, px, 3, (255, 255, 255), -1, lineType=cv2.LINE_AA)
+            render.draw_text(
+                canvas,
+                "Keep looking at the dot — now slowly move your head: left, right, up, down",
+                (16, 28),
+                theme.MAGENTA,
+                scale=0.6,
+                thickness=2,
+            )
+            render.draw_meter_bar(canvas, (20, h - 30), (w - 40, 12), calibrator.progress, theme.MAGENTA)
+            return
+
         is_settling = calibrator.phase == PHASE_SETTLE
         # A distinct, non-pulsing ring during "settle" signals "not recording
         # yet, just move your eyes here" versus the pulsing "hold still, now

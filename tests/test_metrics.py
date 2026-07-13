@@ -142,3 +142,25 @@ def test_classify_centered_gaze():
     assert metrics.classify_centered_gaze((-0.2, 0.0)) == "LEFT"
     assert metrics.classify_centered_gaze((0.0, 0.2)) == "DOWN"
     assert metrics.classify_centered_gaze((0.0, -0.2)) == "UP"
+
+
+# --- head pose proxy ---------------------------------------------------------
+
+def test_head_pose_proxy_degenerate_face_returns_none():
+    nose = np.array([50.0, 60.0])
+    same = np.array([50.0, 50.0])
+    assert metrics.head_pose_proxy(nose, same, same) is None
+
+
+def test_head_pose_proxy_yaw_increases_as_nose_moves_toward_right():
+    left, right = np.array([0.0, 50.0]), np.array([100.0, 50.0])
+    centered = metrics.head_pose_proxy(np.array([50.0, 70.0]), left, right)
+    turned = metrics.head_pose_proxy(np.array([70.0, 70.0]), left, right)
+    assert turned[0] > centered[0]
+
+
+def test_head_pose_proxy_is_scale_invariant():
+    near = metrics.head_pose_proxy(np.array([60.0, 70.0]), np.array([0.0, 50.0]), np.array([100.0, 50.0]))
+    far = metrics.head_pose_proxy(np.array([120.0, 140.0]), np.array([0.0, 100.0]), np.array([200.0, 100.0]))
+    assert abs(near[0] - far[0]) < 1e-9
+    assert abs(near[1] - far[1]) < 1e-9

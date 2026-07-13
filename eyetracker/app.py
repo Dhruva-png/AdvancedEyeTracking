@@ -36,6 +36,9 @@ class Application:
             settle_sec=self.config.calibration_settle_sec,
             capture_sec=self.config.calibration_capture_sec,
             ridge_lambda=self.config.calibration_ridge_lambda,
+            head_pose_compensation=self.config.head_pose_compensation,
+            sweep_settle_sec=self.config.calibration_sweep_settle_sec,
+            sweep_sec=self.config.calibration_sweep_sec,
         )
         self.gaze_view = GazeView(
             get_screen_resolution(),
@@ -137,7 +140,7 @@ class Application:
             self.heatmap.add(result.x_norm, result.y_norm)
 
         if self.calibrator.active:
-            self.calibrator.update(result.raw_gaze_offset)
+            self.calibrator.update(result.raw_gaze_offset, result.head_pose)
 
         self._maybe_log(result, tracker.blink_count)
 
@@ -180,5 +183,7 @@ class Application:
         if now - self._last_gaze_view_update < self.config.gaze_view_update_interval_sec:
             return
         self._last_gaze_view_update = now
-        screen_point = self.calibrator.map(result.raw_gaze_offset) if not self.calibrator.active else None
+        screen_point = (
+            self.calibrator.map(result.raw_gaze_offset, result.head_pose) if not self.calibrator.active else None
+        )
         self.gaze_view.draw(screen_point, self.calibrator)

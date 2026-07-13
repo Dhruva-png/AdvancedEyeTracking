@@ -31,6 +31,7 @@ class FrameResult:
     right_eye_pts: np.ndarray | None = None
     gaze: str = "UNKNOWN"
     raw_gaze_offset: tuple[float, float] | None = None  # head-invariant, EMA-smoothed, blink-frozen
+    head_pose: tuple[float, float] | None = None        # (yaw, pitch) proxy for head-movement compensation
     blink: bool = False
     left_ear: float = 0.0
     right_ear: float = 0.0
@@ -99,6 +100,7 @@ class EyeTracker:
         blink = self._detect_blink(left_ear, right_ear)
 
         candidate_offset = self._compute_gaze_feature(mesh, left_iris_f, right_iris_f, w, h)
+        head_pose = self._compute_head_pose(mesh, w, h)
 
         # A half-closed eye (mid-blink, squinting) gives a geometrically
         # meaningless iris position. Rather than feed that noise into the gaze
@@ -135,6 +137,7 @@ class EyeTracker:
             right_eye_pts=right_eye_pts,
             gaze=gaze,
             raw_gaze_offset=raw_gaze_offset,
+            head_pose=head_pose,
             blink=blink,
             left_ear=left_ear,
             right_ear=right_ear,
@@ -161,6 +164,12 @@ class EyeTracker:
             pt(lm.RIGHT_EYE_BOTTOM_LID),
         )
         return metrics.fuse_eye_gaze(left, right)
+
+    def _compute_head_pose(self, mesh, w, h) -> tuple[float, float] | None:
+        def pt(idx: int) -> np.ndarray:
+            return np.array([mesh[idx].x * w, mesh[idx].y * h])
+
+        return metrics.head_pose_proxy(pt(lm.NOSE_TIP), pt(lm.FACE_LEFT_REF), pt(lm.FACE_RIGHT_REF))
 
     def _detect_blink(self, left_ear: float, right_ear: float) -> bool:
         threshold = self.config.blink_ear_threshold

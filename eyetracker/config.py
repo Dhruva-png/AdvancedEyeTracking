@@ -32,6 +32,9 @@ class TrackerConfig:
     calibration_settle_sec: float = 0.5           # time to look toward a new dot before we start recording
     calibration_capture_sec: float = 1.0          # recording window per dot; samples are median-aggregated
     calibration_ridge_lambda: float = 1e-3        # L2 regularization on the quadratic gaze-mapping fit
+    head_pose_compensation: bool = True           # add a head-movement phase so head yaw/pitch is corrected for
+    calibration_sweep_settle_sec: float = 1.2     # time to read the "move your head" prompt before recording the sweep
+    calibration_sweep_sec: float = 4.5            # head-sweep recording window (fixate center, move head around)
 
     output_dir: str = "output"
     output_prefix: str = "eye_tracking_session"

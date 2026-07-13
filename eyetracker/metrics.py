@@ -64,6 +64,37 @@ def normalized_eye_gaze(
     return hx, hy
 
 
+def head_pose_proxy(
+    nose: np.ndarray, face_left: np.ndarray, face_right: np.ndarray
+) -> tuple[float, float] | None:
+    """Cheap, robust head yaw/pitch proxy: the nose tip's position relative to
+    the outer eye corners, expressed in the eye-aligned frame and normalized
+    by the inter-corner (face) width.
+
+    Only the *change* from the calibration pose is ever used, so the absolute
+    per-person offset cancels; what matters is that turning the head shifts the
+    nose horizontally (yaw) and nodding shifts it vertically (pitch) relative
+    to the eye line. Measuring in the eye-aligned frame and normalizing by face
+    width makes the proxy invariant to head roll and camera distance, matching
+    the gaze feature. Returns None if the face reference is degenerate.
+
+    This replaces a full solvePnP head-pose estimate, which would need camera
+    intrinsics (focal length) we don't have; a guessed focal length makes
+    solvePnP no more reliable than this proxy for our correction purpose.
+    """
+    axis = face_right - face_left
+    face_width = float(np.linalg.norm(axis))
+    if face_width < 1e-6:
+        return None
+    u = axis / face_width
+    v = np.array([-u[1], u[0]])
+    mid = (face_left + face_right) / 2.0
+    d = nose - mid
+    yaw = float(np.dot(d, u) / face_width)
+    pitch = float(np.dot(d, v) / face_width)
+    return yaw, pitch
+
+
 def fuse_eye_gaze(left: tuple[float, float] | None, right: tuple[float, float] | None) -> tuple[float, float] | None:
     """Average the two eyes' gaze features, falling back to whichever is valid."""
     if left is None and right is None:
