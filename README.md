@@ -8,7 +8,7 @@ iris landmarks instead of classic Haar-cascade eye detection.
 
 - **Iris-accurate gaze tracking** via MediaPipe's refined face mesh (468 + iris landmarks)
 - **Blink detection** using eye-aspect-ratio (EAR) with debouncing so a single blink isn't double-counted
-- **On-screen gaze cursor** — a glowing circle in a dedicated "Gaze View" window that follows where you're looking, backed by a 5-point calibration that fits a per-user linear mapping from raw eye position to screen coordinates
+- **On-screen gaze cursor** — a glowing circle in a dedicated "Gaze View" window that follows where you're looking, backed by a 9-point calibration that fits a per-user quadratic mapping from raw eye position to screen coordinates
 - **Polished camera HUD** — glowing iris markers, smooth eye outlines, a translucent stat panel (gaze, blinks, EAR meter, FPS, calibration status), and a blink flash effect
 - **Live gaze heatmap** rendered as a smoothed, normalized density grid
 - **Optional live dashboard** — dark-themed camera/heatmap/blink-trend/KPI-card grid, all panels updating in place for low overhead
@@ -21,7 +21,7 @@ eyetracker/
   config.py          tunable parameters (dataclass)
   landmarks.py        MediaPipe landmark index groups
   metrics.py           pure functions: EAR, smoothing, gaze offset/classification
-  calibration.py       5-point calibration -> linear raw-gaze-to-screen mapping
+  calibration.py       9-point calibration -> ridge-regularized quadratic raw-gaze-to-screen mapping
   heatmap.py           gaze accumulation + gaussian-smoothed rendering
   tracker.py           per-frame MediaPipe processing -> FrameResult (no drawing)
   theme.py             shared color palette (BGR for cv2, hex for matplotlib)
@@ -71,23 +71,48 @@ python main.py
 |-----|--------|
 | `h` | Toggle the live matplotlib dashboard |
 | `g` | Toggle the Gaze View window (on-screen gaze cursor) |
-| `c` | Start 5-point calibration |
+| `c` | Start 9-point calibration |
 | `e` | Export the current session (CSV + Excel + heatmap PNG) |
 | `q` | Quit and auto-export |
 
 The Gaze View window works out of the box in an uncalibrated, best-effort
 mode, but accuracy improves substantially after calibrating (`c`) for your
-current seating position — recalibrate whenever you move.
+current seating position — recalibrate whenever you move (or if lighting
+changes a lot).
 
-**Calibrating:** for each of the 5 dots, there's a brief "get ready" pause
+**Calibrating:** for each of the 9 dots, there's a brief "get ready" pause
 (the ring is dim and steady) followed by a "hold still, capturing" window
 (the ring pulses) — only samples from the pulsing window count, and they're
 median-aggregated per point before fitting, so a stray blink or saccade
-during capture won't skew the result. An early version sampled every camera
-frame with no settle time at all, which finished each point in under a
-second and fit calibration to eye movement transients instead of steady
-fixations — this is why it's worth actually waiting for the pulse rather
-than snapping to the dot and immediately moving to the next one.
+during capture won't skew the result. It takes roughly 15-20 seconds; sit
+still and keep your head in a natural, comfortable position throughout,
+since the fit is calibrated to that head position/distance from the
+camera specifically.
+
+**Why 9 points and not 5:** the iris's position within its eye socket
+doesn't move linearly with on-screen gaze position even for a still head,
+so a 5-point *linear* fit was measurably inaccurate away from the
+calibration points — it's exact at the 5 dots and increasingly wrong
+in between and past them, which reads as "jumpy and inaccurate" cursor
+behavior. The mapping is now a ridge-regularized *quadratic* fit
+(6 coefficients per axis instead of 3), and 9 well-spread points give it
+enough data to be well-conditioned across the whole screen instead of
+extrapolating from just the center and 4 corners.
+
+**Why the cursor doesn't jump as much anymore:** two upstream signal fixes,
+plus a cursor-side safety net:
+- The eye bounding box (used to compute where the iris sits *within* the
+  eye) is now smoothed frame-to-frame. Previously only the iris center was
+  smoothed while the box itself was recomputed raw every frame — since the
+  gaze ratio *divides by* the box's width/height, a small amount of raw
+  landmark jitter in the box was being amplified into a much larger jump
+  in the ratio.
+- Gaze estimation now freezes during a blink or squint (EAR below a
+  "still usable" threshold) instead of computing a position from a
+  half-closed eye, which is geometrically meaningless.
+- As a last line of defense, the Gaze View damps any single-frame jump
+  larger than a plausible saccade instead of snapping the cursor there —
+  legitimate fast eye movements still arrive, just over 2-3 frames.
 
 Optional flags:
 

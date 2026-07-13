@@ -56,3 +56,22 @@ def test_classify_gaze_direction_matches_offset_buckets():
     assert metrics.classify_gaze_direction((0.5, 0.5)) == "CENTER"
     assert metrics.classify_gaze_direction((0.1, 0.5)) == "LEFT"
     assert metrics.classify_gaze_direction((0.9, 0.5)) == "RIGHT"
+
+
+def test_smooth_values_first_call_returns_input_as_floats():
+    result = metrics.smooth_values((10, 20, 30, 40), None, alpha=0.15)
+    assert result == (10.0, 20.0, 30.0, 40.0)
+    assert all(isinstance(v, float) for v in result)
+
+
+def test_smooth_values_moves_toward_new_value_without_rounding():
+    result = metrics.smooth_values((100.0, 100.0), (0.0, 0.0), alpha=0.5)
+    assert result == (50.0, 50.0)
+
+
+def test_smooth_values_low_alpha_damps_jitter():
+    # A small alpha should barely move on a single noisy sample -- this is
+    # exactly the property `eye_box_smoothing_alpha` relies on to keep the
+    # iris-in-box ratio from amplifying per-frame landmark jitter.
+    result = metrics.smooth_values((10.0,), (0.0,), alpha=0.1)
+    assert result[0] == 1.0

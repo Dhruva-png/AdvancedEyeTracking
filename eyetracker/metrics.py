@@ -22,7 +22,7 @@ def iris_center(landmarks, iris_indices: list[int], frame_w: int, frame_h: int) 
 
 
 def smooth_point(new_point: tuple[int, int], prev_point: tuple[int, int] | None, alpha: float) -> tuple[int, int]:
-    """Exponential moving average; returns new_point unchanged on the first call."""
+    """Exponential moving average for pixel coordinates; returns new_point unchanged on the first call."""
     if prev_point is None:
         return new_point
     x = alpha * new_point[0] + (1 - alpha) * prev_point[0]
@@ -30,7 +30,21 @@ def smooth_point(new_point: tuple[int, int], prev_point: tuple[int, int] | None,
     return int(x), int(y)
 
 
-def eye_offset(eye_center: tuple[int, int], eye_box: tuple[int, int, int, int]) -> tuple[float, float] | None:
+def smooth_values(new: tuple[float, ...], prev: tuple[float, ...] | None, alpha: float) -> tuple[float, ...]:
+    """Exponential moving average over an arbitrary-length tuple, kept as floats.
+
+    Used for the eye bounding box: `eye_offset` divides by box width/height,
+    so unlike a drawn pixel coordinate, sub-pixel jitter in the box directly
+    and disproportionately amplifies noise in the resulting ratio. Rounding
+    to int (like `smooth_point`) would throw away the precision this exists
+    to add back.
+    """
+    if prev is None:
+        return tuple(float(v) for v in new)
+    return tuple(alpha * n + (1 - alpha) * p for n, p in zip(new, prev))
+
+
+def eye_offset(eye_center: tuple[float, float], eye_box: tuple[float, float, float, float]) -> tuple[float, float] | None:
     """Continuous position of the iris within its eye box, roughly in [0, 1] on each axis.
 
     This is the raw signal gaze estimation is built on: `classify_gaze_direction`

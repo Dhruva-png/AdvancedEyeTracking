@@ -35,6 +35,7 @@ class Application:
         self.calibrator = GazeCalibrator(
             settle_sec=self.config.calibration_settle_sec,
             capture_sec=self.config.calibration_capture_sec,
+            ridge_lambda=self.config.calibration_ridge_lambda,
         )
         self.gaze_view = GazeView(
             get_screen_resolution(),

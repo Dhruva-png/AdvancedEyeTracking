@@ -23,6 +23,7 @@ from .calibration import PHASE_SETTLE, GazeCalibrator
 
 WINDOW_NAME = "Gaze View"
 _MAX_CANVAS_WIDTH = 1280
+_MAX_PLAUSIBLE_JUMP = 0.25  # normalized screen-fraction distance; larger single-frame jumps are damped
 
 
 class GazeView:
@@ -86,7 +87,16 @@ class GazeView:
             if self._smoothed is None:
                 self._smoothed = gaze_point_norm
             else:
-                a = self.smoothing_alpha
+                dx = gaze_point_norm[0] - self._smoothed[0]
+                dy = gaze_point_norm[1] - self._smoothed[1]
+                jump = (dx * dx + dy * dy) ** 0.5
+                # A jump bigger than a saccade should plausibly cover in one
+                # frame is more likely a momentary tracking hiccup than a
+                # real eye movement; blend it in gradually instead of
+                # snapping the cursor there, so one bad frame doesn't look
+                # like a teleport. Legitimate fast movements still arrive,
+                # just over 2-3 frames instead of one.
+                a = self.smoothing_alpha * 0.25 if jump > _MAX_PLAUSIBLE_JUMP else self.smoothing_alpha
                 self._smoothed = (
                     a * gaze_point_norm[0] + (1 - a) * self._smoothed[0],
                     a * gaze_point_norm[1] + (1 - a) * self._smoothed[1],

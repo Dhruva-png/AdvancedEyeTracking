@@ -56,6 +56,9 @@ class EyeTracker:
         )
         self._smooth_left: tuple[int, int] | None = None
         self._smooth_right: tuple[int, int] | None = None
+        self._smooth_left_box: tuple[float, float, float, float] | None = None
+        self._smooth_right_box: tuple[float, float, float, float] | None = None
+        self._last_valid_gaze_offset: tuple[float, float] | None = None
         self._last_blink_time: float = 0.0
         self.blink_count: int = 0
 
@@ -94,9 +97,27 @@ class EyeTracker:
         right_ear = metrics.eye_aspect_ratio(right_eye_pts)
         blink = self._detect_blink(left_ear, right_ear)
 
-        left_offset = metrics.eye_offset(self._smooth_left, left_box)
-        right_offset = metrics.eye_offset(self._smooth_right, right_box)
-        raw_gaze_offset = _average_offsets(left_offset, right_offset)
+        # eye_offset divides the iris position by the box's own width/height,
+        # so per-frame jitter in the box (a few noisy landmarks each frame)
+        # gets amplified into a much larger jump in the ratio than the same
+        # jitter would cause in a plain pixel coordinate. Smoothing the box
+        # itself (not just the iris center) removes most of that.
+        box_alpha = self.config.eye_box_smoothing_alpha
+        self._smooth_left_box = metrics.smooth_values(left_box, self._smooth_left_box, box_alpha)
+        self._smooth_right_box = metrics.smooth_values(right_box, self._smooth_right_box, box_alpha)
+
+        left_offset = metrics.eye_offset(self._smooth_left, self._smooth_left_box)
+        right_offset = metrics.eye_offset(self._smooth_right, self._smooth_right_box)
+        candidate_offset = _average_offsets(left_offset, right_offset)
+
+        # A half-closed eye (mid-blink, squinting) gives a geometrically
+        # meaningless iris-in-box ratio. Rather than feed that noise into the
+        # gaze signal, freeze it at the last trustworthy reading.
+        eyes_open_enough = left_ear >= self.config.gaze_valid_ear_threshold and right_ear >= self.config.gaze_valid_ear_threshold
+        if candidate_offset is not None and eyes_open_enough:
+            self._last_valid_gaze_offset = candidate_offset
+        raw_gaze_offset = self._last_valid_gaze_offset
+
         gaze = metrics.classify_gaze_direction(raw_gaze_offset)
 
         avg_x = (self._smooth_left[0] + self._smooth_right[0]) / 2.0

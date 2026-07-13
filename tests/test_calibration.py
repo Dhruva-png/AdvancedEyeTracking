@@ -1,4 +1,4 @@
-from eyetracker.calibration import PHASE_CAPTURE, PHASE_SETTLE, GazeCalibrator
+from eyetracker.calibration import CALIBRATION_POINTS, PHASE_SETTLE, GazeCalibrator
 
 
 class FakeClock:
@@ -14,10 +14,24 @@ class FakeClock:
         self.now += seconds
 
 
-def _make_calibrator(points, settle_sec=0.5, capture_sec=1.0):
+def _make_calibrator(points, settle_sec=0.5, capture_sec=1.0, ridge_lambda=1e-3):
     clock = FakeClock()
-    calibrator = GazeCalibrator(points=points, settle_sec=settle_sec, capture_sec=capture_sec, clock=clock)
+    calibrator = GazeCalibrator(
+        points=points, settle_sec=settle_sec, capture_sec=capture_sec, ridge_lambda=ridge_lambda, clock=clock
+    )
     return calibrator, clock
+
+
+def _run_full_calibration(calibrator, clock, sample_for_target):
+    """Drives a calibrator through settle+capture for every point using `sample_for_target(target) -> raw_offset`."""
+    calibrator.start()
+    for target in calibrator.points:
+        clock.advance(calibrator.settle_sec + 0.1)  # clear settle
+        calibrator.update(sample_for_target(target))  # tip settle -> capture
+        for _ in range(5):
+            calibrator.update(sample_for_target(target))
+        clock.advance(calibrator.capture_sec + 0.1)  # clear capture, finalize point
+        calibrator.update(sample_for_target(target))
 
 
 def test_uncalibrated_map_passes_through_clipped():
@@ -30,6 +44,10 @@ def test_uncalibrated_map_passes_through_clipped():
 def test_map_of_none_is_none():
     calibrator, _ = _make_calibrator([(0.5, 0.5)])
     assert calibrator.map(None) is None
+
+
+def test_default_calibration_grid_has_nine_points():
+    assert len(CALIBRATION_POINTS) == 9
 
 
 def test_start_begins_in_settle_phase():
@@ -49,26 +67,38 @@ def test_update_during_settle_does_not_record_samples():
     assert calibrator.phase == PHASE_SETTLE
 
 
-def test_samples_only_recorded_during_capture_and_median_aggregated():
-    points = [(0.5, 0.5), (0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
-    calibrator, clock = _make_calibrator(points, settle_sec=0.5, capture_sec=1.0)
-    calibrator.start()
-
-    for target in points:
-        clock.advance(0.6)  # clear the settle window
-        calibrator.update(target)  # tip over from settle -> capture
-        # Feed one outlier plus several on-target samples; the median should reject the outlier.
-        calibrator.update((target[0] + 5.0, target[1] + 5.0))
-        for _ in range(5):
-            calibrator.update(target)
-        clock.advance(1.1)  # clear the capture window and finalize this point
-        calibrator.update(target)
+def test_full_grid_identity_calibration_is_recovered_exactly():
+    # With the true relationship exactly linear (target == raw) and enough
+    # well-spread points for the quadratic model to be well-determined,
+    # an unregularized fit should recover it almost exactly.
+    calibrator, clock = _make_calibrator(CALIBRATION_POINTS, settle_sec=0.5, capture_sec=1.0, ridge_lambda=0.0)
+    _run_full_calibration(calibrator, clock, sample_for_target=lambda target: target)
 
     assert calibrator.active is False
     assert calibrator.is_calibrated is True
-    sx, sy = calibrator.map((0.25, 0.75))
-    assert abs(sx - 0.25) < 1e-6
-    assert abs(sy - 0.75) < 1e-6
+    sx, sy = calibrator.map((0.3, 0.7))
+    assert abs(sx - 0.3) < 1e-6
+    assert abs(sy - 0.7) < 1e-6
+
+
+def test_outlier_sample_during_capture_is_rejected_by_median():
+    calibrator, clock = _make_calibrator(CALIBRATION_POINTS, settle_sec=0.5, capture_sec=1.0, ridge_lambda=0.0)
+    calibrator.start()
+    for target in calibrator.points:
+        clock.advance(calibrator.settle_sec + 0.1)
+        calibrator.update(target)  # tip settle -> capture (this sample is discarded by design, not recorded)
+        calibrator.update((target[0] + 5.0, target[1] - 5.0))  # one bad sample, recorded during capture
+        for _ in range(5):
+            calibrator.update(target)  # good samples, recorded during capture
+        clock.advance(calibrator.capture_sec + 0.1)
+        calibrator.update(target)  # crosses the capture deadline -> finalize this point
+
+    assert calibrator.is_calibrated is True
+    # 6 good samples vs. 1 outlier per point: the per-axis median should
+    # land exactly on the good value regardless of how far off the outlier is.
+    sx, sy = calibrator.map((0.5, 0.5))
+    assert abs(sx - 0.5) < 1e-6
+    assert abs(sy - 0.5) < 1e-6
 
 
 def test_stays_uncalibrated_if_face_missing_through_most_of_calibration():

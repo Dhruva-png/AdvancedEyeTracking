@@ -2,11 +2,16 @@
 
 A webcam alone can't infer absolute gaze geometry (head distance, eye shape,
 and camera angle all bias the raw eye offset differently per person). A
-short 5-point calibration — look at each point, hold still — collects paired
-(raw_offset -> known_screen_point) samples and fits a linear least-squares
-map. This is the same trick simple gaze-tracking demos use in place of a full
-3D eye model, and it's good enough to make the on-screen gaze cursor track
-correctly for a single seated user.
+short 9-point calibration — look at each point, hold still — collects paired
+(raw_offset -> known_screen_point) samples and fits a quadratic least-squares
+map (nx^2, ny^2, nx*ny, nx, ny, 1). This is the standard trick simple webcam
+gaze trackers use in place of a full 3D eye model: a plain affine (linear)
+fit only captures a uniform stretch/shift, but the iris-in-box ratio doesn't
+vary linearly with screen position even for a still head, so a 5-point
+affine fit was measurably inaccurate away from the calibration points. The
+9-point grid gives the quadratic fit enough well-spread data to be
+well-conditioned, and the fit is ridge-regularized so noisy samples don't
+blow it up.
 
 Calibration runs on wall-clock time, not frame count: each point gets a
 short "settle" window (dot just appeared, eyes are still saccading toward
@@ -25,32 +30,42 @@ from typing import Callable
 
 import numpy as np
 
-# Center first (used as the "not yet calibrated" fallback target too), then corners.
+# 3x3 grid, evenly spread so the quadratic fit is well-conditioned across the
+# whole screen rather than extrapolating heavily from just 5 points.
+_EDGE = 0.08
+_MID = 0.5
+_FAR = 0.92
 CALIBRATION_POINTS: list[tuple[float, float]] = [
-    (0.5, 0.5),
-    (0.08, 0.08),
-    (0.92, 0.08),
-    (0.08, 0.92),
-    (0.92, 0.92),
+    (_MID, _MID),
+    (_EDGE, _EDGE), (_MID, _EDGE), (_FAR, _EDGE),
+    (_EDGE, _MID), (_FAR, _MID),
+    (_EDGE, _FAR), (_MID, _FAR), (_FAR, _FAR),
 ]
 
 PHASE_SETTLE = "settle"
 PHASE_CAPTURE = "capture"
 
-_MIN_FITTED_POINTS = 3  # affine fit has 3 unknowns per axis; need at least this many good points
+_MIN_FITTED_POINTS = 5  # quadratic fit has 6 unknowns per axis; ridge keeps fewer points from blowing up, but this floor avoids fitting pure noise
+
+
+def _design_row(nx: float, ny: float) -> list[float]:
+    """Quadratic feature expansion: captures the mild eye-in-box nonlinearity a plain affine fit misses."""
+    return [nx * nx, ny * ny, nx * ny, nx, ny, 1.0]
 
 
 class GazeCalibrator:
     def __init__(
         self,
         points: list[tuple[float, float]] | None = None,
-        settle_sec: float = 0.6,
-        capture_sec: float = 1.2,
+        settle_sec: float = 0.5,
+        capture_sec: float = 1.0,
+        ridge_lambda: float = 1e-3,
         clock: Callable[[], float] = time.time,
     ):
         self.points = points or CALIBRATION_POINTS
         self.settle_sec = settle_sec
         self.capture_sec = capture_sec
+        self.ridge_lambda = ridge_lambda
         self._clock = clock
 
         self.active = False
@@ -60,7 +75,7 @@ class GazeCalibrator:
         self._capture_samples: list[tuple[float, float]] = []
         self._fitted_raw: list[tuple[float, float]] = []
         self._fitted_targets: list[tuple[float, float]] = []
-        self._transform: np.ndarray | None = None  # 3x2, maps [nx, ny, 1] -> [sx, sy]
+        self._transform: np.ndarray | None = None  # 6x2, maps quadratic features of (nx, ny) -> [sx, sy]
 
     @property
     def is_calibrated(self) -> bool:
@@ -137,10 +152,20 @@ class GazeCalibrator:
     def _fit(self) -> None:
         if len(self._fitted_raw) < _MIN_FITTED_POINTS:
             return  # too few usable fixations (e.g. face kept dropping out); stay uncalibrated
-        raw = np.array(self._fitted_raw, dtype=float)
+        design = np.array([_design_row(nx, ny) for nx, ny in self._fitted_raw])
         target = np.array(self._fitted_targets, dtype=float)
-        design = np.hstack([raw, np.ones((raw.shape[0], 1))])
-        transform, *_ = np.linalg.lstsq(design, target, rcond=None)
+
+        # Ridge regression (ATA + lambda*I) instead of plain least squares:
+        # a handful of noisy calibration samples feeding a 6-parameter
+        # quadratic fit can otherwise swing wildly at the screen edges. The
+        # regularization trades a small amount of bias for a lot less
+        # variance, which is the right trade for ~9 noisy data points.
+        gram = design.T @ design + self.ridge_lambda * np.eye(design.shape[1])
+        rhs = design.T @ target
+        try:
+            transform = np.linalg.solve(gram, rhs)
+        except np.linalg.LinAlgError:
+            return
         if np.all(np.isfinite(transform)):
             self._transform = transform
 
@@ -153,8 +178,8 @@ class GazeCalibrator:
             # still moves sensibly before the user calibrates.
             nx, ny = raw_offset
             return float(np.clip(nx, 0.0, 1.0)), float(np.clip(ny, 0.0, 1.0))
-        vec = np.array([raw_offset[0], raw_offset[1], 1.0])
-        sx, sy = vec @ self._transform
+        row = np.array(_design_row(*raw_offset))
+        sx, sy = row @ self._transform
         if not (np.isfinite(sx) and np.isfinite(sy)):
             return None
         return float(np.clip(sx, 0.0, 1.0)), float(np.clip(sy, 0.0, 1.0))
