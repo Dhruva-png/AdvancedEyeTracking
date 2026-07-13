@@ -11,6 +11,7 @@ import cv2
 
 from .calibration import GazeCalibrator
 from .config import TrackerConfig
+from .game_view import GazePopView
 from .gaze_view import GazeView
 from .heatmap import GazeHeatmap
 from .hud import CameraHUD
@@ -21,7 +22,7 @@ from .tracker import EyeTracker
 
 logger = logging.getLogger("eyetracker")
 
-WINDOW_NAME = "Eye Tracking  |  h: dashboard  g: gaze view  c: calibrate  e: export  q: quit"
+WINDOW_NAME = "Eye Tracking  |  h: dashboard  g: gaze view  p: play  c: calibrate  e: export  q: quit"
 MAX_CONSECUTIVE_FRAME_ERRORS = 30
 
 
@@ -40,15 +41,18 @@ class Application:
             sweep_settle_sec=self.config.calibration_sweep_settle_sec,
             sweep_sec=self.config.calibration_sweep_sec,
         )
+        screen_resolution = get_screen_resolution()
         self.gaze_view = GazeView(
-            get_screen_resolution(),
+            screen_resolution,
             trail_length=self.config.gaze_trail_length,
             min_cutoff=self.config.gaze_cursor_min_cutoff,
             beta=self.config.gaze_cursor_beta,
         )
+        self.game_view = GazePopView(screen_resolution, self.config)
 
         self._show_dashboard = False
         self._show_gaze_view = self.config.gaze_view_enabled_by_default
+        self._show_game = False
         self._last_log_time = 0.0
         self._last_dashboard_update = 0.0
         self._last_gaze_view_update = 0.0
@@ -63,7 +67,10 @@ class Application:
         cam.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.frame_width)
         cam.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.frame_height)
 
-        logger.info("Camera opened. Controls: [h] dashboard  [g] gaze view  [c] calibrate  [e] export  [q] quit")
+        logger.info(
+            "Camera opened. Controls: [h] dashboard  [g] gaze view  [p] play Gaze Pop  "
+            "[c] calibrate  [e] export  [q] quit"
+        )
 
         try:
             tracker = EyeTracker(self.config)
@@ -82,6 +89,7 @@ class Application:
             cv2.destroyAllWindows()
             self.dashboard.close()
             self.gaze_view.close()
+            self.game_view.close()
             if self.session_logger.samples:
                 paths = self.session_logger.export(self.heatmap)
                 logger.info("Session saved: %s", paths)
@@ -121,9 +129,25 @@ class Application:
                 if not self._show_gaze_view:
                     self.gaze_view.close()
                 logger.info("Gaze view %s", "ON" if self._show_gaze_view else "OFF")
+            elif key == ord("p"):
+                self._show_game = not self._show_game
+                if self._show_game:
+                    # Gaze Pop takes over the gaze cursor; hide the plain gaze view to avoid two windows fighting.
+                    self._show_gaze_view = False
+                    self.gaze_view.close()
+                    if not self.calibrator.is_calibrated:
+                        logger.info("Gaze Pop started (uncalibrated). Press 'c' anytime for better accuracy.")
+                    else:
+                        logger.info("Gaze Pop started. Look at an orb and hold to pop it!")
+                else:
+                    self.game_view.close()
+                    logger.info("Gaze Pop closed.")
             elif key == ord("c"):
                 self.calibrator.start()
                 logger.info("Calibration started: look at each highlighted dot in the Gaze View window.")
+                if self._show_game:
+                    self._show_game = False
+                    self.game_view.close()
                 if not self._show_gaze_view:
                     self._show_gaze_view = True
             elif key == ord("e"):
@@ -149,8 +173,17 @@ class Application:
         )
         cv2.imshow(WINDOW_NAME, rendered)
 
+        # The calibrated on-screen gaze point drives both the gaze view and the
+        # game; compute it once. None while calibrating (the dot guides the eye).
+        screen_point = (
+            self.calibrator.map(result.raw_gaze_offset, result.head_pose) if not self.calibrator.active else None
+        )
+
+        if self._show_game:
+            self.game_view.step(screen_point)
+
         if self._show_gaze_view:
-            self._maybe_update_gaze_view(result)
+            self._maybe_update_gaze_view(screen_point)
 
         if self._show_dashboard:
             self._maybe_update_dashboard(result, tracker.blink_count)
@@ -178,12 +211,9 @@ class Application:
         self._last_dashboard_update = now
         self.dashboard.update(result.frame, self.heatmap.normalized(), blink_count, result.gaze)
 
-    def _maybe_update_gaze_view(self, result) -> None:
+    def _maybe_update_gaze_view(self, screen_point) -> None:
         now = time.time()
         if now - self._last_gaze_view_update < self.config.gaze_view_update_interval_sec:
             return
         self._last_gaze_view_update = now
-        screen_point = (
-            self.calibrator.map(result.raw_gaze_offset, result.head_pose) if not self.calibrator.active else None
-        )
         self.gaze_view.draw(screen_point, self.calibrator)

@@ -20,6 +20,15 @@ TEXT_MUTED = (150, 150, 160)
 
 FONT = 0  # cv2.FONT_HERSHEY_SIMPLEX, kept numeric to avoid importing cv2 here
 
+# Gaze Pop orb palette (BGR). Indices match Target.color_index.
+GAME_ORB_COLORS = [
+    (238, 209, 30),    # cyan
+    (176, 46, 214),    # magenta
+    (129, 234, 108),   # green
+    (26, 178, 255),    # amber
+    (255, 128, 90),    # periwinkle
+]
+
 
 def bgr_to_mpl(bgr: tuple[int, int, int]) -> tuple[float, float, float]:
     """Convert a BGR 0-255 tuple to an RGB 0-1 tuple for matplotlib."""

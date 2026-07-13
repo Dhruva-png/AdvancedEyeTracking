@@ -36,6 +36,16 @@ class TrackerConfig:
     calibration_sweep_settle_sec: float = 1.2     # time to read the "move your head" prompt before recording the sweep
     calibration_sweep_sec: float = 4.5            # head-sweep recording window (fixate center, move head around)
 
+    # Gaze Pop mini-game (press 'p'). Dwell = look-and-hold to activate, which
+    # naturally filters gaze jitter, so the game stays fun even uncalibrated.
+    game_duration_sec: float = 45.0
+    game_dwell_sec: float = 0.55           # how long you must hold your gaze on an orb to pop it
+    game_target_radius: float = 0.065      # orb radius as a fraction of the smaller screen dimension
+    game_max_targets: int = 3              # how many orbs are on screen at once
+    game_spawn_interval_sec: float = 0.8   # minimum gap between spawns
+    game_target_lifetime_sec: float = 6.0  # an ignored orb fades out after this long
+    game_combo_window_sec: float = 2.5     # pop again within this window to keep the combo going
+
     output_dir: str = "output"
     output_prefix: str = "eye_tracking_session"
 

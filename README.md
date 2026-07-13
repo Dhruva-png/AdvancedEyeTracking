@@ -6,6 +6,7 @@ iris landmarks instead of classic Haar-cascade eye detection.
 
 ## Features
 
+- **🎮 Gaze Pop mini-game** — a hands-free game you play with your eyes: look at an orb and hold your gaze to pop it, chain pops for combo multipliers, beat the clock. Press `p`. (See below.)
 - **Iris-accurate gaze tracking** via MediaPipe's refined face mesh (468 + iris landmarks)
 - **Blink detection** using eye-aspect-ratio (EAR) with debouncing so a single blink isn't double-counted
 - **On-screen gaze cursor** — a glowing circle in a dedicated "Gaze View" window that follows where you're looking, backed by a 9-point calibration that fits a per-user quadratic mapping from raw eye position to screen coordinates
@@ -29,6 +30,8 @@ eyetracker/
   render.py            low-level cv2 drawing helpers (glow circles, panels, meters)
   hud.py               camera-window overlay (stateful: blink flash, FPS)
   gaze_view.py          virtual-monitor window showing the live gaze cursor
+  game.py               Gaze Pop rules (pure: dwell/scoring/combo/state machine)
+  game_view.py          Gaze Pop renderer (orbs, particles, HUD, score card)
   screen_utils.py       primary monitor resolution detection
   session_logger.py     in-memory sample buffer -> CSV/Excel/PNG export
   live_dashboard.py      optional matplotlib live view
@@ -37,9 +40,9 @@ main.py                 CLI entry point
 ```
 
 Logic is split from presentation: `metrics.py`, `filters.py`, `heatmap.py`,
-and `calibration.py` are pure/deterministic and covered by unit tests in
-`tests/`, independent of any camera or display hardware. `tracker.py`
-extracts signals only — all drawing lives in `hud.py`/`gaze_view.py`.
+`calibration.py`, and `game.py` are pure/deterministic and covered by unit
+tests in `tests/`, independent of any camera or display hardware. `tracker.py`
+extracts signals only — all drawing lives in the `*_view`/`hud` modules.
 
 ## How accurate is it, really?
 
@@ -117,9 +120,10 @@ python main.py
 
 | Key | Action |
 |-----|--------|
+| `p` | Play **Gaze Pop** (the mini-game) |
 | `h` | Toggle the live matplotlib dashboard |
 | `g` | Toggle the Gaze View window (on-screen gaze cursor) |
-| `c` | Start 9-point calibration |
+| `c` | Start calibration |
 | `e` | Export the current session (CSV + Excel + heatmap PNG) |
 | `q` | Quit and auto-export |
 
@@ -146,6 +150,30 @@ python main.py --camera 1 --width 1920 --height 1080 --output-dir output
 ```
 
 Exports are written to `output/` by default (git-ignored).
+
+## 🎮 Gaze Pop
+
+A tiny arcade game you play entirely with your eyes — no mouse, no keyboard
+during play. Press `p` from the running app to open it in its own window.
+
+**How to play:** glowing orbs appear on screen. **Look at an orb and hold your
+gaze** — a ring fills around it, and when it completes, the orb pops for points.
+Pop orbs in quick succession to build a **combo multiplier** (x2, x3, …) for
+bigger scores. You have 45 seconds; the round ends on a score card showing your
+points, orbs popped, best combo, and accuracy. It's fully hands-free: dwell on
+the center orb to start and to replay.
+
+**Why dwell-to-pop?** Holding your gaze for half a second is what makes webcam
+gaze *feel* precise — momentary jitter or a single bad frame never completes a
+dwell, so the game reads as accurate even though no webcam is pixel-perfect.
+(It's also the same interaction real eye-controlled and accessibility UIs use.)
+Because of that, Gaze Pop is fun even **uncalibrated**, but pressing `c` to
+calibrate first makes it noticeably sharper.
+
+**Showing it off:** calibrate (`c`), press `p`, play a round, and screenshot
+the end card — that's the LinkedIn shot. To record a clip, capture the Gaze Pop
+window (and optionally the camera window beside it so people can see your eyes
+driving it).
 
 ## Tests
 
