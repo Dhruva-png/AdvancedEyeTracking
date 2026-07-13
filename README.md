@@ -71,13 +71,23 @@ python main.py
 |-----|--------|
 | `h` | Toggle the live matplotlib dashboard |
 | `g` | Toggle the Gaze View window (on-screen gaze cursor) |
-| `c` | Start 5-point calibration — look at each highlighted dot and hold still |
+| `c` | Start 5-point calibration |
 | `e` | Export the current session (CSV + Excel + heatmap PNG) |
 | `q` | Quit and auto-export |
 
 The Gaze View window works out of the box in an uncalibrated, best-effort
 mode, but accuracy improves substantially after calibrating (`c`) for your
 current seating position — recalibrate whenever you move.
+
+**Calibrating:** for each of the 5 dots, there's a brief "get ready" pause
+(the ring is dim and steady) followed by a "hold still, capturing" window
+(the ring pulses) — only samples from the pulsing window count, and they're
+median-aggregated per point before fitting, so a stray blink or saccade
+during capture won't skew the result. An early version sampled every camera
+frame with no settle time at all, which finished each point in under a
+second and fit calibration to eye movement transients instead of steady
+fixations — this is why it's worth actually waiting for the pulse rather
+than snapping to the dot and immediately moving to the next one.
 
 Optional flags:
 

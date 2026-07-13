@@ -10,6 +10,16 @@ import cv2
 import numpy as np
 
 
+def _clip_roi(img: np.ndarray, x: int, y: int, w: int, h: int) -> tuple[np.ndarray, int, int] | None:
+    """Returns (view_into_img, local_x_offset, local_y_offset) clipped to image bounds, or None if empty."""
+    height, width = img.shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(width, x + w), min(height, y + h)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return img[y0:y1, x0:x1], x0, y0
+
+
 def draw_glow_circle(
     img: np.ndarray,
     center: tuple[int, int],
@@ -20,18 +30,26 @@ def draw_glow_circle(
 ) -> None:
     """Layered translucent circles fading outward, plus a solid bright core.
 
-    Each pass re-copies the current `img` as its base so passes composite
-    correctly (largest/dimmest circle first, smallest/brightest last).
+    Only the bounding-box region around the circle is copied/blended, not the
+    whole frame — drawing this several times per frame (both irises, the
+    gaze cursor) on a full 720p+ image would otherwise dominate frame time.
     """
+    pad = radius + 3
+    roi_info = _clip_roi(img, center[0] - pad, center[1] - pad, pad * 2, pad * 2)
+    if roi_info is None:
+        return
+    roi, x0, y0 = roi_info
+    local_center = (center[0] - x0, center[1] - y0)
+
     for i in range(layers, 0, -1):
         layer_radius = max(1, int(radius * i / layers))
         alpha = 0.08 + 0.15 * (1 - (i - 1) / layers)
-        overlay = img.copy()
-        cv2.circle(overlay, center, layer_radius, color, -1, lineType=cv2.LINE_AA)
-        cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, dst=img)
+        overlay = roi.copy()
+        cv2.circle(overlay, local_center, layer_radius, color, -1, lineType=cv2.LINE_AA)
+        cv2.addWeighted(overlay, alpha, roi, 1 - alpha, 0, dst=roi)
     core_radius = max(2, int(radius * core_scale))
-    cv2.circle(img, center, core_radius, color, -1, lineType=cv2.LINE_AA)
-    cv2.circle(img, center, core_radius, (255, 255, 255), 1, lineType=cv2.LINE_AA)
+    cv2.circle(roi, local_center, core_radius, color, -1, lineType=cv2.LINE_AA)
+    cv2.circle(roi, local_center, core_radius, (255, 255, 255), 1, lineType=cv2.LINE_AA)
 
 
 def draw_rounded_panel(
@@ -42,15 +60,23 @@ def draw_rounded_panel(
     alpha: float = 0.55,
     radius: int = 14,
 ) -> None:
-    """Alpha-blended rounded-rectangle panel, used as a backdrop for HUD text."""
-    x, y = top_left
-    w, h = size
-    overlay = img.copy()
-    cv2.rectangle(overlay, (x + radius, y), (x + w - radius, y + h), color, -1)
-    cv2.rectangle(overlay, (x, y + radius), (x + w, y + h - radius), color, -1)
-    for cx, cy in [(x + radius, y + radius), (x + w - radius, y + radius), (x + radius, y + h - radius), (x + w - radius, y + h - radius)]:
-        cv2.circle(overlay, (cx, cy), radius, color, -1, lineType=cv2.LINE_AA)
-    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, dst=img)
+    """Alpha-blended rounded-rectangle panel, used as a backdrop for HUD text.
+
+    Blends only the panel's own bounding box rather than the whole frame.
+    """
+    roi_info = _clip_roi(img, top_left[0], top_left[1], size[0], size[1])
+    if roi_info is None:
+        return
+    roi, x0, y0 = roi_info
+    rw, rh = roi.shape[1], roi.shape[0]
+    r = max(0, min(radius, rw // 2, rh // 2))
+
+    overlay = roi.copy()
+    cv2.rectangle(overlay, (r, 0), (rw - r, rh), color, -1)
+    cv2.rectangle(overlay, (0, r), (rw, rh - r), color, -1)
+    for cx, cy in [(r, r), (rw - r, r), (r, rh - r), (rw - r, rh - r)]:
+        cv2.circle(overlay, (cx, cy), r, color, -1, lineType=cv2.LINE_AA)
+    cv2.addWeighted(overlay, alpha, roi, 1 - alpha, 0, dst=roi)
 
 
 def draw_text(

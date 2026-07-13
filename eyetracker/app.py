@@ -22,6 +22,7 @@ from .tracker import EyeTracker
 logger = logging.getLogger("eyetracker")
 
 WINDOW_NAME = "Eye Tracking  |  h: dashboard  g: gaze view  c: calibrate  e: export  q: quit"
+MAX_CONSECUTIVE_FRAME_ERRORS = 30
 
 
 class Application:
@@ -31,7 +32,10 @@ class Application:
         self.session_logger = SessionLogger(self.config.output_dir, self.config.output_prefix)
         self.dashboard = LiveDashboard(self.config.dashboard_window_sec)
         self.hud = CameraHUD()
-        self.calibrator = GazeCalibrator(samples_per_point=self.config.calibration_samples_per_point)
+        self.calibrator = GazeCalibrator(
+            settle_sec=self.config.calibration_settle_sec,
+            capture_sec=self.config.calibration_capture_sec,
+        )
         self.gaze_view = GazeView(
             get_screen_resolution(),
             trail_length=self.config.gaze_trail_length,
@@ -80,6 +84,7 @@ class Application:
                 logger.info("No samples recorded; nothing to export.")
 
     def _loop(self, cam: cv2.VideoCapture, tracker: EyeTracker) -> None:
+        consecutive_errors = 0
         while True:
             ok, frame = cam.read()
             if not ok:
@@ -87,26 +92,20 @@ class Application:
                 continue
 
             frame = cv2.flip(frame, 1)
-            result = tracker.process(frame)
 
-            if result.face_found and result.x_norm is not None:
-                self.heatmap.add(result.x_norm, result.y_norm)
-
-            if self.calibrator.active:
-                self.calibrator.add_sample(result.raw_gaze_offset)
-
-            self._maybe_log(result, tracker.blink_count)
-
-            rendered = self.hud.draw(
-                result, tracker.blink_count, calibrating=self.calibrator.active, calibrated=self.calibrator.is_calibrated
-            )
-            cv2.imshow(WINDOW_NAME, rendered)
-
-            if self._show_gaze_view:
-                self._maybe_update_gaze_view(result)
-
-            if self._show_dashboard:
-                self._maybe_update_dashboard(result, tracker.blink_count)
+            # A single bad frame (e.g. a rendering edge case on an unusual
+            # face pose) shouldn't kill an otherwise-fine session. Skip it,
+            # but escalate if failures keep happening — that's a real bug,
+            # not a one-off.
+            try:
+                self._process_and_render(frame, tracker)
+                consecutive_errors = 0
+            except Exception:
+                consecutive_errors += 1
+                logger.exception("Error processing a frame (%d in a row); skipping it.", consecutive_errors)
+                if consecutive_errors >= MAX_CONSECUTIVE_FRAME_ERRORS:
+                    logger.error("Too many consecutive frame errors; stopping.")
+                    raise
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("h"):
@@ -128,6 +127,28 @@ class Application:
             elif key == ord("q"):
                 logger.info("Quit requested.")
                 break
+
+    def _process_and_render(self, frame, tracker: EyeTracker) -> None:
+        result = tracker.process(frame)
+
+        if result.face_found and result.x_norm is not None:
+            self.heatmap.add(result.x_norm, result.y_norm)
+
+        if self.calibrator.active:
+            self.calibrator.update(result.raw_gaze_offset)
+
+        self._maybe_log(result, tracker.blink_count)
+
+        rendered = self.hud.draw(
+            result, tracker.blink_count, calibrating=self.calibrator.active, calibrated=self.calibrator.is_calibrated
+        )
+        cv2.imshow(WINDOW_NAME, rendered)
+
+        if self._show_gaze_view:
+            self._maybe_update_gaze_view(result)
+
+        if self._show_dashboard:
+            self._maybe_update_dashboard(result, tracker.blink_count)
 
     def _maybe_log(self, result, blink_count: int) -> None:
         now = time.time()

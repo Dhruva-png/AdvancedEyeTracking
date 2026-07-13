@@ -55,8 +55,17 @@ class CameraHUD:
     @staticmethod
     def _draw_eye(frame: np.ndarray, eye_pts: np.ndarray | None, iris_center: tuple[int, int] | None) -> None:
         if eye_pts is not None and len(eye_pts) >= 5:
-            ellipse = cv2.fitEllipse(eye_pts.astype(np.float32))
-            cv2.ellipse(frame, ellipse, theme.CYAN_SOFT, 1, lineType=cv2.LINE_AA)
+            # During a blink the 6 contour points nearly collapse onto a line;
+            # fitEllipse can then return non-finite axes, which cv2.ellipse
+            # rejects with a hard error. Skip the outline for that one frame
+            # rather than crash the whole session over a blink.
+            try:
+                ellipse = cv2.fitEllipse(eye_pts.astype(np.float32))
+                (_, _), (major, minor), _ = ellipse
+                if np.isfinite(major) and np.isfinite(minor) and major > 0 and minor > 0:
+                    cv2.ellipse(frame, ellipse, theme.CYAN_SOFT, 1, lineType=cv2.LINE_AA)
+            except cv2.error:
+                pass
         if iris_center is not None:
             render.draw_glow_circle(frame, iris_center, radius=10, color=theme.CYAN, layers=4)
 
