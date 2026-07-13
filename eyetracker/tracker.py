@@ -1,4 +1,9 @@
-"""Per-frame face/eye analysis backed by MediaPipe Face Mesh."""
+"""Per-frame face/eye analysis backed by MediaPipe Face Mesh.
+
+Pure signal extraction only — no drawing. Presentation lives in `hud.py` and
+`gaze_view.py` so tracking logic can be reasoned about (and tested) without a
+rendering pipeline attached.
+"""
 
 from __future__ import annotations
 
@@ -20,8 +25,15 @@ class FrameResult:
     frame: np.ndarray
     left_center: tuple[int, int] | None = None
     right_center: tuple[int, int] | None = None
+    left_box: tuple[int, int, int, int] | None = None
+    right_box: tuple[int, int, int, int] | None = None
+    left_eye_pts: np.ndarray | None = None
+    right_eye_pts: np.ndarray | None = None
     gaze: str = "UNKNOWN"
+    raw_gaze_offset: tuple[float, float] | None = None
     blink: bool = False
+    left_ear: float = 0.0
+    right_ear: float = 0.0
     x_norm: float | None = None
     y_norm: float | None = None
 
@@ -82,22 +94,30 @@ class EyeTracker:
         right_ear = metrics.eye_aspect_ratio(right_eye_pts)
         blink = self._detect_blink(left_ear, right_ear)
 
-        gaze = metrics.gaze_direction(self._smooth_left, left_box)
+        left_offset = metrics.eye_offset(self._smooth_left, left_box)
+        right_offset = metrics.eye_offset(self._smooth_right, right_box)
+        raw_gaze_offset = _average_offsets(left_offset, right_offset)
+        gaze = metrics.classify_gaze_direction(raw_gaze_offset)
 
         avg_x = (self._smooth_left[0] + self._smooth_right[0]) / 2.0
         avg_y = (self._smooth_left[1] + self._smooth_right[1]) / 2.0
         x_norm = float(np.clip(avg_x / w, 0.0, 1.0))
         y_norm = float(np.clip(avg_y / h, 0.0, 1.0))
 
-        self._draw_overlay(frame, left_box, right_box, gaze)
-
         return FrameResult(
             face_found=True,
             frame=frame,
             left_center=self._smooth_left,
             right_center=self._smooth_right,
+            left_box=left_box,
+            right_box=right_box,
+            left_eye_pts=left_eye_pts,
+            right_eye_pts=right_eye_pts,
             gaze=gaze,
+            raw_gaze_offset=raw_gaze_offset,
             blink=blink,
+            left_ear=left_ear,
+            right_ear=right_ear,
             x_norm=x_norm,
             y_norm=y_norm,
         )
@@ -112,12 +132,14 @@ class EyeTracker:
             return True
         return False
 
-    def _draw_overlay(self, frame, left_box, right_box, gaze: str) -> None:
-        lx, ly, lw, lh = left_box
-        rx, ry, rw, rh = right_box
-        cv2.circle(frame, self._smooth_left, 4, (0, 0, 255), -1)
-        cv2.circle(frame, self._smooth_right, 4, (0, 0, 255), -1)
-        cv2.rectangle(frame, (lx, ly), (lx + lw, ly + lh), (255, 255, 255), 1)
-        cv2.rectangle(frame, (rx, ry), (rx + rw, ry + rh), (255, 255, 255), 1)
-        cv2.putText(frame, f"Gaze: {gaze}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-        cv2.putText(frame, f"Blinks: {self.blink_count}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+def _average_offsets(
+    left: tuple[float, float] | None, right: tuple[float, float] | None
+) -> tuple[float, float] | None:
+    if left is None and right is None:
+        return None
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return (left[0] + right[0]) / 2.0, (left[1] + right[1]) / 2.0

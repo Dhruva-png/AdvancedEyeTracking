@@ -1,4 +1,5 @@
-"""Capture loop orchestration: wires the tracker, heatmap, logger and dashboard together."""
+"""Capture loop orchestration: wires the tracker, HUD, calibrator, gaze view,
+heatmap, logger, and live dashboard together."""
 
 from __future__ import annotations
 
@@ -8,15 +9,19 @@ from datetime import datetime
 
 import cv2
 
+from .calibration import GazeCalibrator
 from .config import TrackerConfig
+from .gaze_view import GazeView
 from .heatmap import GazeHeatmap
+from .hud import CameraHUD
 from .live_dashboard import LiveDashboard
+from .screen_utils import get_screen_resolution
 from .session_logger import SessionLogger
 from .tracker import EyeTracker
 
 logger = logging.getLogger("eyetracker")
 
-WINDOW_NAME = "Eye Tracking  |  h: dashboard   e: export   q: quit"
+WINDOW_NAME = "Eye Tracking  |  h: dashboard  g: gaze view  c: calibrate  e: export  q: quit"
 
 
 class Application:
@@ -25,9 +30,19 @@ class Application:
         self.heatmap = GazeHeatmap(self.config.heatmap_grid_size, self.config.heatmap_gaussian_sigma)
         self.session_logger = SessionLogger(self.config.output_dir, self.config.output_prefix)
         self.dashboard = LiveDashboard(self.config.dashboard_window_sec)
+        self.hud = CameraHUD()
+        self.calibrator = GazeCalibrator(samples_per_point=self.config.calibration_samples_per_point)
+        self.gaze_view = GazeView(
+            get_screen_resolution(),
+            trail_length=self.config.gaze_trail_length,
+            smoothing_alpha=self.config.gaze_cursor_smoothing_alpha,
+        )
+
         self._show_dashboard = False
+        self._show_gaze_view = self.config.gaze_view_enabled_by_default
         self._last_log_time = 0.0
         self._last_dashboard_update = 0.0
+        self._last_gaze_view_update = 0.0
 
     def run(self) -> None:
         cam = cv2.VideoCapture(self.config.camera_index)
@@ -39,7 +54,7 @@ class Application:
         cam.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.frame_width)
         cam.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.frame_height)
 
-        logger.info("Camera opened. Controls: [h] dashboard  [e] export now  [q] quit")
+        logger.info("Camera opened. Controls: [h] dashboard  [g] gaze view  [c] calibrate  [e] export  [q] quit")
 
         try:
             tracker = EyeTracker(self.config)
@@ -57,6 +72,7 @@ class Application:
             cam.release()
             cv2.destroyAllWindows()
             self.dashboard.close()
+            self.gaze_view.close()
             if self.session_logger.samples:
                 paths = self.session_logger.export(self.heatmap)
                 logger.info("Session saved: %s", paths)
@@ -76,16 +92,36 @@ class Application:
             if result.face_found and result.x_norm is not None:
                 self.heatmap.add(result.x_norm, result.y_norm)
 
+            if self.calibrator.active:
+                self.calibrator.add_sample(result.raw_gaze_offset)
+
             self._maybe_log(result, tracker.blink_count)
-            cv2.imshow(WINDOW_NAME, result.frame)
+
+            rendered = self.hud.draw(
+                result, tracker.blink_count, calibrating=self.calibrator.active, calibrated=self.calibrator.is_calibrated
+            )
+            cv2.imshow(WINDOW_NAME, rendered)
+
+            if self._show_gaze_view:
+                self._maybe_update_gaze_view(result)
 
             if self._show_dashboard:
-                self._maybe_update_dashboard(result.frame, tracker.blink_count)
+                self._maybe_update_dashboard(result, tracker.blink_count)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("h"):
                 self._show_dashboard = not self._show_dashboard
                 logger.info("Dashboard %s", "ON" if self._show_dashboard else "OFF")
+            elif key == ord("g"):
+                self._show_gaze_view = not self._show_gaze_view
+                if not self._show_gaze_view:
+                    self.gaze_view.close()
+                logger.info("Gaze view %s", "ON" if self._show_gaze_view else "OFF")
+            elif key == ord("c"):
+                self.calibrator.start()
+                logger.info("Calibration started: look at each highlighted dot in the Gaze View window.")
+                if not self._show_gaze_view:
+                    self._show_gaze_view = True
             elif key == ord("e"):
                 paths = self.session_logger.export(self.heatmap)
                 logger.info("Manual export complete: %s", paths)
@@ -109,9 +145,17 @@ class Application:
             blink_count=blink_count,
         )
 
-    def _maybe_update_dashboard(self, frame, blink_count: int) -> None:
+    def _maybe_update_dashboard(self, result, blink_count: int) -> None:
         now = time.time()
         if now - self._last_dashboard_update < self.config.dashboard_update_interval_sec:
             return
         self._last_dashboard_update = now
-        self.dashboard.update(frame, self.heatmap.normalized(), blink_count)
+        self.dashboard.update(result.frame, self.heatmap.normalized(), blink_count, result.gaze)
+
+    def _maybe_update_gaze_view(self, result) -> None:
+        now = time.time()
+        if now - self._last_gaze_view_update < self.config.gaze_view_update_interval_sec:
+            return
+        self._last_gaze_view_update = now
+        screen_point = self.calibrator.map(result.raw_gaze_offset) if not self.calibrator.active else None
+        self.gaze_view.draw(screen_point, self.calibrator)

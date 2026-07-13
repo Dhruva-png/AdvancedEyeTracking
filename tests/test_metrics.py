@@ -38,3 +38,21 @@ def test_gaze_direction_right():
 
 def test_gaze_direction_unknown_for_empty_box():
     assert metrics.gaze_direction((10, 10), (0, 0, 0, 0)) == "UNKNOWN"
+
+
+def test_eye_offset_returns_none_for_degenerate_box():
+    assert metrics.eye_offset((10, 10), (0, 0, 0, 0)) is None
+
+
+def test_eye_offset_returns_fraction_within_box():
+    assert metrics.eye_offset((50, 25), (0, 0, 100, 100)) == (0.5, 0.25)
+
+
+def test_classify_gaze_direction_unknown_for_none():
+    assert metrics.classify_gaze_direction(None) == "UNKNOWN"
+
+
+def test_classify_gaze_direction_matches_offset_buckets():
+    assert metrics.classify_gaze_direction((0.5, 0.5)) == "CENTER"
+    assert metrics.classify_gaze_direction((0.1, 0.5)) == "LEFT"
+    assert metrics.classify_gaze_direction((0.9, 0.5)) == "RIGHT"

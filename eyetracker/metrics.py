@@ -30,14 +30,25 @@ def smooth_point(new_point: tuple[int, int], prev_point: tuple[int, int] | None,
     return int(x), int(y)
 
 
-def gaze_direction(eye_center: tuple[int, int], eye_box: tuple[int, int, int, int]) -> str:
-    """Classify gaze into UP/DOWN/LEFT/RIGHT/CENTER from the iris position within its eye box."""
+def eye_offset(eye_center: tuple[int, int], eye_box: tuple[int, int, int, int]) -> tuple[float, float] | None:
+    """Continuous position of the iris within its eye box, roughly in [0, 1] on each axis.
+
+    This is the raw signal gaze estimation is built on: `classify_gaze_direction`
+    buckets it into a human-readable label, and `GazeCalibrator` maps it onto
+    normalized screen coordinates. Returns None when the eye box is degenerate.
+    """
     x, y = eye_center
     ex, ey, ew, eh = eye_box
     if ew == 0 or eh == 0:
+        return None
+    return (x - ex) / float(ew), (y - ey) / float(eh)
+
+
+def classify_gaze_direction(offset: tuple[float, float] | None) -> str:
+    """Bucket a continuous eye offset into UP/DOWN/LEFT/RIGHT/CENTER for display."""
+    if offset is None:
         return "UNKNOWN"
-    nx = (x - ex) / float(ew)
-    ny = (y - ey) / float(eh)
+    nx, ny = offset
     if nx < 0.3:
         return "LEFT"
     if nx > 0.7:
@@ -47,3 +58,8 @@ def gaze_direction(eye_center: tuple[int, int], eye_box: tuple[int, int, int, in
     if ny > 0.75:
         return "DOWN"
     return "CENTER"
+
+
+def gaze_direction(eye_center: tuple[int, int], eye_box: tuple[int, int, int, int]) -> str:
+    """Convenience wrapper: eye_offset + classify_gaze_direction in one call."""
+    return classify_gaze_direction(eye_offset(eye_center, eye_box))

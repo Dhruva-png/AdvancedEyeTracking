@@ -20,6 +20,12 @@ class TrackerConfig:
     dashboard_update_interval_sec: float = 0.2
     dashboard_window_sec: float = 30.0
 
+    gaze_view_enabled_by_default: bool = True
+    gaze_view_update_interval_sec: float = 0.03   # ~30 Hz, kept snappy since it's the headline visual
+    gaze_cursor_smoothing_alpha: float = 0.35
+    gaze_trail_length: int = 24
+    calibration_samples_per_point: int = 20
+
     output_dir: str = "output"
     output_prefix: str = "eye_tracking_session"
 

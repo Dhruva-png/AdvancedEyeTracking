@@ -8,27 +8,44 @@ iris landmarks instead of classic Haar-cascade eye detection.
 
 - **Iris-accurate gaze tracking** via MediaPipe's refined face mesh (468 + iris landmarks)
 - **Blink detection** using eye-aspect-ratio (EAR) with debouncing so a single blink isn't double-counted
+- **On-screen gaze cursor** — a glowing circle in a dedicated "Gaze View" window that follows where you're looking, backed by a 5-point calibration that fits a per-user linear mapping from raw eye position to screen coordinates
+- **Polished camera HUD** — glowing iris markers, smooth eye outlines, a translucent stat panel (gaze, blinks, EAR meter, FPS, calibration status), and a blink flash effect
 - **Live gaze heatmap** rendered as a smoothed, normalized density grid
-- **Optional live dashboard** — camera feed, heatmap, and blink-rate chart, all updating in place for low overhead
+- **Optional live dashboard** — dark-themed camera/heatmap/blink-trend/KPI-card grid, all panels updating in place for low overhead
 - **Session export** to CSV (raw samples), Excel (raw samples + heatmap matrix + summary), and PNG (heatmap image)
 
 ## Architecture
 
 ```
 eyetracker/
-  config.py         tunable parameters (dataclass)
-  landmarks.py       MediaPipe landmark index groups
-  metrics.py         pure functions: EAR, smoothing, gaze classification
-  heatmap.py         gaze accumulation + gaussian-smoothed rendering
-  tracker.py         per-frame MediaPipe processing -> FrameResult
-  session_logger.py  in-memory sample buffer -> CSV/Excel/PNG export
-  live_dashboard.py  optional matplotlib live view
-  app.py             capture loop orchestration
-main.py              CLI entry point
+  config.py          tunable parameters (dataclass)
+  landmarks.py        MediaPipe landmark index groups
+  metrics.py           pure functions: EAR, smoothing, gaze offset/classification
+  calibration.py       5-point calibration -> linear raw-gaze-to-screen mapping
+  heatmap.py           gaze accumulation + gaussian-smoothed rendering
+  tracker.py           per-frame MediaPipe processing -> FrameResult (no drawing)
+  theme.py             shared color palette (BGR for cv2, hex for matplotlib)
+  render.py            low-level cv2 drawing helpers (glow circles, panels, meters)
+  hud.py               camera-window overlay (stateful: blink flash, FPS)
+  gaze_view.py          virtual-monitor window showing the live gaze cursor
+  screen_utils.py       primary monitor resolution detection
+  session_logger.py     in-memory sample buffer -> CSV/Excel/PNG export
+  live_dashboard.py      optional matplotlib live view
+  app.py                capture loop orchestration
+main.py                 CLI entry point
 ```
 
-Logic is split from I/O: `metrics.py` and `heatmap.py` are pure/deterministic
-and covered by unit tests in `tests/`, independent of any camera hardware.
+Logic is split from presentation: `metrics.py`, `heatmap.py`, and
+`calibration.py` are pure/deterministic and covered by unit tests in
+`tests/`, independent of any camera or display hardware. `tracker.py`
+extracts signals only — all drawing lives in `hud.py`/`gaze_view.py`.
+
+**Design note on the gaze cursor:** rather than an OS-level always-on-top
+transparent overlay (fragile, platform-specific, and requires broader window-
+manager access), the gaze cursor renders onto its own resizable "Gaze View"
+window sized proportionally to your real screen resolution. Drag it onto
+your monitor and resize freely — the gaze point is stored as a 0–1 fraction,
+so accuracy doesn't depend on the window's pixel size.
 
 ## Install
 
@@ -52,9 +69,15 @@ python main.py
 
 | Key | Action |
 |-----|--------|
-| `h` | Toggle the live dashboard (camera + heatmap + blink chart) |
+| `h` | Toggle the live matplotlib dashboard |
+| `g` | Toggle the Gaze View window (on-screen gaze cursor) |
+| `c` | Start 5-point calibration — look at each highlighted dot and hold still |
 | `e` | Export the current session (CSV + Excel + heatmap PNG) |
 | `q` | Quit and auto-export |
+
+The Gaze View window works out of the box in an uncalibrated, best-effort
+mode, but accuracy improves substantially after calibrating (`c`) for your
+current seating position — recalibrate whenever you move.
 
 Optional flags:
 
